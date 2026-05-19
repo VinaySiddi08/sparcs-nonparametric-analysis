@@ -1,0 +1,902 @@
+---
+title: "Nonparametric Statistical Analysis of Statewide Planning and Research Cooperative System 2022 Hospital Discharge Data: Kings and Queens Counties, New York"
+author: "Vinay Siddi, Department of Data Science, University at Albany, SUNY"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    toc_depth: 3
+    number_sections: true
+geometry: "left=1in,right=1in,top=1in,bottom=1in"
+fontsize: 11pt
+header-includes:
+  - \usepackage{float}
+  - \floatplacement{figure}{H}
+  - \floatplacement{table}{H}
+  - \usepackage{booktabs}
+  - \usepackage{longtable}
+  - \renewcommand{\arraystretch}{1.2}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 6.5, fig.height = 4.2, fig.align = "center",
+                      fig.pos = "H", out.extra = "")
+set.seed(42)
+```
+
+# Introduction
+
+This project applies ten nonparametric statistical tests to the New York
+Statewide Planning and Research Cooperative System (SPARCS) 2022 hospital
+discharge dataset, restricted to Kings County (Brooklyn) and Queens County.
+The tests performed are the Runs Test, Sign Test, Wilcoxon Signed-Rank Test,
+Wilcoxon Rank Sum (Mann--Whitney U) Test, Kolmogorov--Smirnov Test,
+Kruskal--Wallis Test, Friedman Test, Kendall's Tau, Spearman's Rank
+Correlation, and the Permutation Test. The aim is to quantify, with
+distribution-free methods, how Length of Stay, Total Charges, Total Costs,
+and Birth Weight vary between the two counties and across
+demographic/clinical sub-groups.
+
+# Literature Review
+
+A full literature review of prior works (1943--2024) motivating the use
+of distribution-free methods on hospital discharge data -- presented in
+chronological order and including Swed and Eisenhart (1943); Efron and
+Tibshirani (1993); Ernst (2004); Fagerland and Sandvik (2009); Qualls,
+Pallin, and Schuur (2010); Croux and Dehon (2010); Anhoj and Olesen
+(2014); Moore et al.\ (2017); Chazard et al.\ (2017); Ning et al.\
+(2017); Bujang and Sapri (2018); Dieleman et al.\ (2020); Nguyen et al.\
+(2021); Stone et al.\ (2022); Li et al.\ (2022); and Heslin et al.\
+(2024) -- is given in the accompanying LaTeX paper
+`Vinay_Final_Project.pdf`, Section 2. This R-Markdown file is the code
+companion and does not duplicate the full review.
+
+# Data Presentation and Exploratory Analysis
+
+## Load and Clean the Dataset
+
+```{r load-data}
+# Load the SPARCS 2022 Kings and Queens dataset
+mydata <- read.csv("SPARCS_2022_Kings_Queens.csv")
+
+# Derive four numeric columns from the raw (comma-formatted) SPARCS fields
+mydata$Charges <- as.numeric(gsub(",", "", mydata$Total.Charges))
+mydata$Costs   <- as.numeric(gsub(",", "", mydata$Total.Costs))
+mydata$LOS     <- as.numeric(mydata$Length.of.Stay)
+mydata$BirthWt <- as.numeric(mydata$Birth.Weight)
+```
+
+## Dataset Dimensions and Structure
+
+```{r data-description}
+# Raw SPARCS CSV has 33 columns. We added 4 derived numeric columns above,
+# so ncol(mydata) = 37 (33 original SPARCS + 4 derived).
+cat("Number of Rows (Observations):", nrow(mydata), "\n")
+cat("Number of Columns (Variables):", ncol(mydata),
+    " (33 original SPARCS + 4 derived numeric)\n")
+cat("Size of Dataset (in-memory R object):",
+    format(object.size(mydata), units = "MB"),
+    "| CSV on disk: ~160 MB\n")
+cat("Time Period: Calendar Year 2022\n")
+cat("Geographic Coverage: Kings County and Queens County, NYC\n")
+cat("Counties:", paste(unique(mydata$Hospital.County), collapse = ", "), "\n")
+```
+
+## Variable Classification
+
+```{r var-classification}
+# Note: this counts by R *storage type*, not by measurement scale.
+# Several SPARCS fields (e.g., APR DRG Code, APR MDC Code, Operating
+# Certificate Number, Permanent Facility ID) are stored as integers but
+# are nominal classification labels - arithmetic on them is not
+# meaningful. See the LaTeX paper Table 1 for the measurement-scale
+# classification.
+num_quant <- sum(sapply(mydata, is.numeric))
+num_qual  <- sum(sapply(mydata, function(x) is.character(x) || is.factor(x)))
+cat("Numeric (R storage):", num_quant, "\n")
+cat("Character/factor (R storage):", num_qual, "\n")
+```
+
+By **measurement scale** (rather than R storage type), the 33 original
+SPARCS variables break down as: 4 truly quantitative (ratio-scale)
+variables — Length of Stay, Total Charges, Total Costs, Birth Weight;
+1 ordinal variable — APR Severity of Illness Code (1--4); and 28
+categorical (nominal) variables, including ID and classification codes
+(Operating Certificate Number, Permanent Facility ID, APR DRG Code, APR
+MDC Code) that are stored as integers but represent labels rather than
+measurements. Discharge Year is constant (2022) and contributes no
+variation.
+
+## Summary of Key Numeric Variables
+
+```{r summary-stats}
+summary(mydata[, c("LOS", "Charges", "Costs", "BirthWt")])
+```
+
+## Exploratory Graphs
+
+The graphs below illustrate the distributional shape, skewness, and group
+differences that motivate the choice of nonparametric tests.
+
+### Boxplots of Length of Stay, Charges, and Costs by County
+
+```{r eda-boxplots, fig.cap="Log-scale boxplots by Hospital County."}
+# Shared color palette for all county boxplots
+county_cols <- c("#8FBFE0", "#F4A259")
+
+# Length of Stay (in days) - log scale with plain day numbers
+boxplot(LOS ~ Hospital.County,
+        data = mydata[!is.na(mydata$LOS), ],
+        log  = "y", yaxt = "n",
+        main = "Length of Stay by County (log scale)",
+        ylab = "Length of Stay (days)",
+        col  = county_cols)
+axis(2, at = c(1, 2, 5, 10, 20, 50, 100),
+     labels = c("1", "2", "5", "10", "20", "50", "100"), las = 1)
+
+# Total Charges - log scale with readable dollar labels
+boxplot(Charges ~ Hospital.County,
+        data = mydata[!is.na(mydata$Charges), ],
+        log  = "y", yaxt = "n",
+        main = "Total Charges by County (log scale)",
+        ylab = "Total Charges (USD)",
+        col  = county_cols)
+axis(2, at = c(10, 100, 1000, 10000, 100000, 1000000, 10000000),
+     labels = c("$10", "$100", "$1K", "$10K", "$100K", "$1M", "$10M"), las = 1)
+
+# Total Costs - log scale with readable dollar labels
+boxplot(Costs ~ Hospital.County,
+        data = mydata[!is.na(mydata$Costs), ],
+        log  = "y", yaxt = "n",
+        main = "Total Costs by County (log scale)",
+        ylab = "Total Costs (USD)",
+        col  = county_cols)
+axis(2, at = c(1, 10, 100, 1000, 10000, 100000, 1000000),
+     labels = c("$1", "$10", "$100", "$1K", "$10K", "$100K", "$1M"), las = 1)
+```
+
+**What these plots show.** The three boxplots above compare Length of Stay (in days), Total Charges (the dollar amount billed), and Total Costs (the actual cost to the hospital) between Kings and Queens counties. The thick black line in each box is the median (the typical patient), and the box itself covers the middle 50% of patients. The y-axis uses a log scale because values range from very small to very large; the small dots above each box are unusually long stays or expensive cases. In all three plots, Kings County sits slightly higher than Queens, meaning Kings patients tend to stay longer and incur higher charges and costs than Queens patients.
+
+### Histograms of Length of Stay (Capped at 30 Days)
+
+```{r eda-hist}
+par(mfrow = c(1, 2))
+hist(mydata$LOS[mydata$Hospital.County == "Kings"  & mydata$LOS <= 30],
+     breaks = 30, col = county_cols[1], border = "white",
+     main = "Kings: LOS (capped 30)",  xlab = "Days")
+hist(mydata$LOS[mydata$Hospital.County == "Queens" & mydata$LOS <= 30],
+     breaks = 30, col = county_cols[2], border = "white",
+     main = "Queens: LOS (capped 30)", xlab = "Days")
+par(mfrow = c(1, 1))
+```
+
+**What these plots show.** These two histograms show how often each length of stay occurs in each county, capped at 30 days so the shape stays readable. Both counties show the same pattern: a huge spike at 1 to 3 days (most patients go home quickly) and a long thin tail going out to 30 days (a small fraction stay much longer). This pattern is called "right-skewed" and is the reason this project uses nonparametric tests instead of standard tests that assume a normal bell curve. The two counties have nearly identical shapes, but Kings has slightly more discharges overall.
+
+### Bar Plot: Discharges by Age Group and County
+
+```{r eda-bar-age, fig.cap="Discharges by Age Group and County."}
+barplot(t(table(mydata$Age.Group, mydata$Hospital.County)),
+        beside = TRUE,
+        col    = county_cols,
+        legend.text = TRUE,
+        args.legend = list(x = "topright", bty = "n"),
+        main   = "Number of Discharges by Age Group and County",
+        ylab   = "Number of Discharges",
+        las    = 1)
+```
+
+**What this plot shows.** This bar chart counts how many hospital discharges fall into each age group, with Kings (blue) and Queens (orange) shown side by side. Both counties follow the same pattern: the elderly (70 or older) account for the most discharges, followed by adults aged 50 to 69. The fewest discharges are for young adults aged 18 to 29, who tend to be the healthiest age group. Kings County has more discharges than Queens in every adult age group, which matches its slightly larger total population.
+
+### Pie Chart: Share of Discharges by County
+
+```{r eda-pie}
+county_counts <- table(mydata$Hospital.County)
+pie(county_counts,
+    col    = county_cols,
+    main   = "Share of Discharges: Kings vs Queens",
+    labels = paste0(names(county_counts), "\n",
+                    format(county_counts, big.mark = ","),
+                    " (", round(100 * county_counts / sum(county_counts), 1), "%)"))
+```
+
+**What this plot shows.** This pie chart shows what share of the 368,495 hospital discharges in this dataset came from each county. Kings County (Brooklyn) accounts for slightly more than half (51.8%) and Queens accounts for the rest (48.2%). The split is fairly even, which means any group differences I find later in the paper come from real differences in patient populations and not just from one county having way more data than the other.
+
+### Empirical CDF of Total Charges
+
+```{r eda-ecdf, fig.cap="Empirical CDF of Total Charges by County."}
+kings_ch  <- mydata$Charges[mydata$Hospital.County == "Kings"  & !is.na(mydata$Charges)]
+queens_ch <- mydata$Charges[mydata$Hospital.County == "Queens" & !is.na(mydata$Charges)]
+
+plot(ecdf(kings_ch),  col = "#1F77B4", lwd = 2,
+     main = "Empirical CDF of Total Charges",
+     xlab = "Total Charges (USD)", xlim = c(0, 200000))
+lines(ecdf(queens_ch), col = "#D62728", lwd = 2)
+legend("bottomright", legend = c("Kings", "Queens"),
+       col = c("#1F77B4", "#D62728"), lwd = 2, bty = "n")
+```
+
+**What this plot shows.** An empirical CDF (cumulative distribution function) shows what percentage of patients had charges at or below a given dollar amount. Reading the chart at $50,000 on the x-axis, you can see that about 60% of Queens patients are charged at or below that amount, but only about 55% of Kings patients are. The Queens curve sits consistently above the Kings curve, meaning Queens patients tend to have lower charges across the board. The visible gap between the two curves is exactly what the Kolmogorov-Smirnov test detects to confirm the distributions are truly different.
+
+### Violin Plot of log10(Costs) by Severity
+
+```{r eda-violin, fig.cap="Violin plot of log10(Total Costs) by APR Severity of Illness."}
+sev <- mydata[!is.na(mydata$Costs) &
+              !is.na(mydata$APR.Severity.of.Illness.Code) &
+              mydata$Costs > 0 & mydata$Costs < 200000 &
+              mydata$APR.Severity.of.Illness.Code %in% 1:4, ]
+
+sev_levels <- 1:4
+sev_labels <- c("1-Minor", "2-Moderate", "3-Major", "4-Extreme")
+pal        <- c("#BCE7FD", "#74C7EC", "#3282B8", "#0F4C81")
+log_costs  <- log10(sev$Costs)
+
+# Scaled kernel densities (one per severity level)
+dens_list <- lapply(sev_levels, function(k) {
+  d <- density(log_costs[sev$APR.Severity.of.Illness.Code == k], n = 512)
+  d$y <- d$y / max(d$y) * 0.35
+  d
+})
+
+plot(0, type = "n",
+     xlim = c(0.5, 4.5), ylim = range(log_costs), xaxt = "n",
+     main = "Violin Plot: log10(Total Costs) by APR Severity",
+     xlab = "Severity Level", ylab = "log10(Total Costs)")
+axis(1, at = 1:4, labels = sev_labels)
+
+for (k in seq_along(sev_levels)) {
+  d    <- dens_list[[k]]
+  vals <- log_costs[sev$APR.Severity.of.Illness.Code == sev_levels[k]]
+
+  # Mirrored density polygon (violin)
+  polygon(c(k + d$y, rev(k - d$y)), c(d$x, rev(d$x)),
+          col = pal[k], border = "grey40")
+  # Inner IQR box and median point
+  rect(k - 0.06, quantile(vals, 0.25),
+       k + 0.06, quantile(vals, 0.75),
+       col = "grey30", border = NA)
+  points(k, median(vals), pch = 21, bg = "white", cex = 1.2)
+}
+```
+
+**What this plot shows.** A violin plot is like a boxplot but with the box "fattened" to show how common each cost level is. Each violin represents one severity level, from Minor (light blue) on the left to Extreme (dark blue) on the right. The wider sections show where most patients in that severity group have their costs. As severity worsens from Minor to Extreme, the violins shift upward (so costs go up) and get wider at the top (so the most expensive cases get even more expensive). This confirms that sicker patients cost the hospital more, in a smooth and predictable way.
+
+### Dot Plot: Median Total Charges by Age Group
+
+```{r eda-dotplot, fig.cap="Dot plot of median Total Charges by Age Group."}
+age_medians <- sort(tapply(mydata$Charges, mydata$Age.Group, median, na.rm = TRUE))
+
+dotchart(age_medians / 1000,
+         labels = names(age_medians),
+         main   = "Median Total Charges by Age Group",
+         xlab   = "Median Total Charges (USD thousands)",
+         pch    = 19, color = "#1F77B4", cex = 1.1)
+abline(v = seq(0, 150, by = 10), col = "grey85", lty = 2)
+```
+
+**What this plot shows.** This dot plot shows the median (typical) hospital charge for each age group, in thousands of dollars. The pattern is very clear: the older the patient, the higher the typical charge. A 70-year-old patient's typical hospital bill (about $63,000) is more than three times higher than a child's (about $20,000). This makes intuitive sense because older patients tend to have more complex health conditions that need longer stays and more procedures. The Kruskal-Wallis test confirms this trend is statistically significant.
+
+# Objective Questions and Research Questions
+
+Each row below gives one objective question (verbal form) and the
+corresponding null hypothesis at the test level. The full per-variable
+table -- with separate objective question, research question, null
+hypothesis, test statistic, p-value, decision, and interpretation for
+each individual variable tested under each procedure -- is provided
+in the accompanying LaTeX paper `Vinay_Final_Project.pdf`,
+Table~4. Significance level $\alpha = 0.05$ is used throughout.
+
+```{r rq, echo=FALSE}
+rq <- data.frame(
+  Test = c("Runs Test", "Sign Test", "Wilcoxon Signed-Rank",
+           "Mann--Whitney U", "Kolmogorov--Smirnov",
+           "Kruskal--Wallis", "Friedman",
+           "Kendall's Tau", "Spearman's Rho",
+           "Permutation Test"),
+  Objective_Question = c(
+    "Are quantitative sequences random?",
+    "Do medians differ between Kings and Queens (paired)?",
+    "Do paired distributions differ, accounting for magnitude?",
+    "Do independent distributions differ between Kings and Queens / ED vs Non-ED?",
+    "Do full CDFs of LOS/Charges/Costs/BirthWt differ between Kings and Queens?",
+    "Do distributions differ across Age Group, Severity, Admission, Payer?",
+    "Do distributions differ across Severity levels, blocking by facility?",
+    "Is there ordinal association between pairs of numeric variables?",
+    "Is there monotone rank association between pairs of numeric variables?",
+    "Is the median difference of Charges between counties attributable to chance?"),
+  H0 = c(
+    "$H_0$: sequence is random",
+    "$H_0$: $\\tilde{\\mu}_K = \\tilde{\\mu}_Q$",
+    "$H_0$: median of paired differences = 0",
+    "$H_0$: distributions equal between groups",
+    "$H_0$: $F_K(x)=F_Q(x)$; $F_{\\text{ED}}(x)=F_{\\text{Non-ED}}(x)$",
+    "$H_0$: $F_1=F_2=\\cdots=F_k$",
+    "$H_0$: no treatment effect within blocks",
+    "$H_0$: $\\tau=0$",
+    "$H_0$: $\\rho_s=0$",
+    "$H_0$: label is exchangeable"))
+
+knitr::kable(rq,
+  caption   = "Research questions and null hypotheses",
+  col.names = c("Test", "Objective Question", "Null Hypothesis"))
+```
+
+# Nonparametric Analyses
+
+## Helper: Consistent Decision Label
+
+```{r helper-decide}
+# One-line helper used throughout the test sections so every table reports
+# "Reject H0" / "Fail to Reject H0" the same way.
+decide <- function(p, alpha = 0.05) {
+  ifelse(is.na(p) | p >= alpha, "Fail to Reject H0", "Reject H0")
+}
+```
+
+## Test 1: Runs Test for Randomness
+
+$$
+Z = \frac{R - E(R)}{\sqrt{\mathrm{Var}(R)}}, \quad
+E(R) = \frac{2 n_1 n_2}{n} + 1
+$$
+
+```{r runs-test}
+# Custom implementation (base R only): dichotomize around the median,
+# count runs, and use the normal approximation for large samples.
+runs_test <- function(x) {
+  x  <- na.omit(x)
+  s  <- ifelse(x > median(x), 1, 0)
+  R  <- 1 + sum(diff(s) != 0)
+  n1 <- sum(s == 1); n2 <- sum(s == 0); n <- n1 + n2
+  ER   <- 2 * n1 * n2 / n + 1
+  VarR <- 2 * n1 * n2 * (2 * n1 * n2 - n) / (n^2 * (n - 1))
+  Z    <- (R - ER) / sqrt(VarR)
+  list(runs = R, expected = ER, z = Z,
+       p = 2 * (1 - pnorm(abs(Z))))
+}
+
+runs_vars <- c("LOS", "Charges", "Costs", "BirthWt",
+               "APR.DRG.Code", "APR.MDC.Code",
+               "APR.Severity.of.Illness.Code")
+
+runs_df <- do.call(rbind, lapply(runs_vars, function(v) {
+  r <- runs_test(mydata[[v]])
+  data.frame(Variable      = v,
+             Observed_Runs = r$runs,
+             Expected_Runs = round(r$expected, 2),
+             Z             = round(r$z, 4),
+             P_value       = signif(r$p, 4),
+             Decision      = decide(r$p),
+             stringsAsFactors = FALSE)
+}))
+
+knitr::kable(runs_df, caption = "Runs Test Results", row.names = FALSE)
+```
+
+**Interpretation.** At $\alpha = 0.05$ all testable variables exhibit a
+non-random ordering. This is expected: SPARCS records are grouped by
+facility and admission date, so the sequence of values carries
+facility-level structure.
+
+**Limitation note on nominal codes.** The Runs Test technically requires
+an ordered numeric sequence so that "above the median" and "below the
+median" carry meaning. Two of the seven variables tested above
+(`APR.DRG.Code` and `APR.MDC.Code`) are nominal classification labels
+stored as integers, so dichotomising them around their numeric median
+is mathematically valid but not clinically interpretable -- the
+rejection of $H_0$ for those two rows reflects only that the file is
+sorted by facility, not a clinical pattern. The four genuinely
+quantitative variables (Length of Stay, Total Charges, Total Costs,
+Birth Weight) plus the ordinal APR Severity of Illness Code give the
+substantively meaningful Runs Test results.
+
+---
+
+## Paired-Data Setup (Tests 2 and 3)
+
+Tests 2 and 3 both compare Kings vs Queens on the same five quantitative
+variables. The block below builds the paired samples **once** (same seed
+throughout) and re-uses them.
+
+```{r paired-setup}
+paired_vars <- c("LOS", "Charges", "Costs", "BirthWt",
+                 "APR.Severity.of.Illness.Code")
+paired_lbl  <- c("Length of Stay", "Total Charges", "Total Costs",
+                 "Birth Weight", "APR Severity of Illness")
+
+# Build one paired (Kings, Queens) sample per variable. We use the same
+# seed (42) every time so the Sign Test and the Wilcoxon Signed-Rank Test
+# operate on exactly the same pairs.
+make_pair <- function(v) {
+  k <- mydata[mydata$Hospital.County == "Kings"  & !is.na(mydata[[v]]), v]
+  q <- mydata[mydata$Hospital.County == "Queens" & !is.na(mydata[[v]]), v]
+  n <- min(length(k), length(q))
+  set.seed(42)
+  list(kings = sample(k, n), queens = sample(q, n))
+}
+
+paired_samples <- setNames(lapply(paired_vars, make_pair), paired_vars)
+```
+
+## Test 2: Sign Test
+
+$$
+H_0: \tilde{\mu}_K = \tilde{\mu}_Q, \qquad
+n^+ \sim \mathrm{Binomial}(n, 0.5) \text{ under } H_0
+$$
+
+```{r sign-test}
+# Sign test on a single pair of aligned vectors
+run_sign_test <- function(x, y) {
+  d  <- (x - y)[!is.na(x - y)]
+  d  <- d[d != 0]                       # drop ties
+  n  <- length(d); np <- sum(d > 0)
+  if (n == 0) return(list(S = NA, p = NA))
+  list(S = np, p = binom.test(np, n, 0.5)$p.value)
+}
+
+sign_results <- do.call(rbind, lapply(seq_along(paired_vars), function(i) {
+  ps <- paired_samples[[i]]
+  r  <- run_sign_test(ps$kings, ps$queens)
+  data.frame(Variable = paired_lbl[i],
+             S        = r$S,
+             P_value  = signif(r$p, 4),
+             Decision = decide(r$p),
+             stringsAsFactors = FALSE)
+}))
+
+knitr::kable(sign_results,
+  caption   = "Sign Test Results: Kings vs Queens (all 5 paired variables)",
+  row.names = FALSE)
+```
+
+## Test 3: Wilcoxon Signed-Rank Test
+
+$$
+V = \min(T^+, T^-)
+$$
+
+```{r wsr-test}
+wsr_results <- do.call(rbind, lapply(seq_along(paired_vars), function(i) {
+  ps <- paired_samples[[i]]
+  wt <- suppressWarnings(wilcox.test(ps$kings, ps$queens, paired = TRUE))
+  data.frame(Variable = paired_lbl[i],
+             V        = as.numeric(wt$statistic),
+             P_value  = signif(wt$p.value, 4),
+             Decision = decide(wt$p.value),
+             stringsAsFactors = FALSE)
+}))
+
+knitr::kable(wsr_results,
+  caption   = "Wilcoxon Signed-Rank Test Results: Kings vs Queens (all 5 paired variables)",
+  row.names = FALSE)
+```
+
+### Combined Paired Tests Summary
+
+```{r paired-combined}
+paired_combined <- merge(
+  sign_results[, c("Variable", "P_value", "Decision")],
+  wsr_results[,  c("Variable", "P_value", "Decision")],
+  by = "Variable", suffixes = c("_Sign", "_WSR"))
+
+knitr::kable(paired_combined,
+  caption   = "Combined Paired Tests Summary (Sign Test vs Wilcoxon Signed-Rank)",
+  col.names = c("Variable", "P-value (Sign)", "Decision (Sign)",
+                "P-value (WSR)", "Decision (WSR)"),
+  row.names = FALSE)
+```
+
+---
+
+## Test 4: Wilcoxon Rank Sum Test (Mann--Whitney U Test)
+
+```{r mw-test}
+# Each row: one two-sample comparison, variable ~ grouping.
+mw_specs <- list(
+  list(lbl = "Total Charges: Kings vs Queens",
+       f   = Charges ~ Hospital.County,           na = "Charges"),
+  list(lbl = "Total Costs: Kings vs Queens",
+       f   = Costs   ~ Hospital.County,           na = "Costs"),
+  list(lbl = "Length of Stay: Kings vs Queens",
+       f   = LOS     ~ Hospital.County,           na = "LOS"),
+  list(lbl = "Total Charges: ED vs Non-ED",
+       f   = Charges ~ Emergency.Department.Indicator,
+       na  = "Charges"),
+  list(lbl = "Birth Weight: Kings vs Queens",
+       f   = BirthWt ~ Hospital.County,           na = "BirthWt"),
+  list(lbl = "APR Severity: Kings vs Queens",
+       f   = APR.Severity.of.Illness.Code ~ Hospital.County,
+       na  = "APR.Severity.of.Illness.Code"))
+
+mw_results <- do.call(rbind, lapply(mw_specs, function(s) {
+  d  <- mydata[!is.na(mydata[[s$na]]), ]
+  mw <- wilcox.test(s$f, data = d)
+  data.frame(Comparison = s$lbl,
+             W          = as.numeric(mw$statistic),
+             P_value    = signif(mw$p.value, 4),
+             Decision   = decide(mw$p.value),
+             stringsAsFactors = FALSE)
+}))
+
+knitr::kable(mw_results,
+  caption   = "Mann-Whitney U Test Results (Independent Samples)",
+  row.names = FALSE)
+```
+
+---
+
+## Test 5: Kolmogorov--Smirnov Two-Sample Test
+
+$$
+D = \sup_x |F_1(x) - F_2(x)|, \quad
+Z = D\sqrt{\tfrac{n_1 n_2}{n_1 + n_2}}
+$$
+
+```{r ks-helper}
+# Reusable helper: run two-sample KS on a list of variables between two
+# subsets of mydata (defined by a grouping variable and its two levels).
+ks_compare <- function(group_var, lvl1, lvl2, vars, labels) {
+  d1 <- mydata[mydata[[group_var]] == lvl1, ]
+  d2 <- mydata[mydata[[group_var]] == lvl2, ]
+  do.call(rbind, lapply(seq_along(vars), function(i) {
+    x <- na.omit(d1[[vars[i]]]); y <- na.omit(d2[[vars[i]]])
+    if (length(x) <= 5 || length(y) <= 5) return(NULL)
+    kr <- ks.test(x, y)
+    data.frame(Variable = labels[i],
+               D        = round(as.numeric(kr$statistic), 5),
+               P_value  = signif(kr$p.value, 4),
+               Decision = decide(kr$p.value),
+               stringsAsFactors = FALSE)
+  }))
+}
+
+ks_vars   <- c("LOS", "Charges", "Costs", "BirthWt")
+ks_labels <- c("Length of Stay", "Total Charges",
+               "Total Costs", "Birth Weight")
+```
+
+### Kings vs Queens
+
+```{r ks-kings-queens}
+ks_kq <- ks_compare("Hospital.County", "Kings", "Queens",
+                    ks_vars, ks_labels)
+knitr::kable(ks_kq,
+  caption = "KS Two-Sample Test: Kings vs Queens",
+  row.names = FALSE)
+```
+
+### Emergency vs Non-Emergency Admissions
+
+```{r ks-ed}
+ks_ed <- ks_compare("Emergency.Department.Indicator", "Y", "N",
+                    ks_vars, ks_labels)
+knitr::kable(ks_ed,
+  caption = "KS Two-Sample Test: Emergency vs Non-Emergency",
+  row.names = FALSE)
+```
+
+---
+
+## Test 6: Kruskal--Wallis Test
+
+$$
+H = \frac{12}{N(N+1)} \sum_{i=1}^{k} \frac{R_i^2}{n_i} - 3(N+1)
+$$
+
+```{r kw-test}
+kw_groups <- c("Age.Group", "APR.Severity.of.Illness.Code",
+               "Type.of.Admission", "Payment.Typology.1")
+kw_labels <- c("Age Group", "APR Severity",
+               "Type of Admission", "Primary Payer")
+
+# Every outcome x every grouping (skip combinations with < 2 levels)
+kw_df <- do.call(rbind, lapply(seq_along(ks_vars), function(i) {
+  v <- ks_vars[i]
+  do.call(rbind, lapply(seq_along(kw_groups), function(j) {
+    g <- kw_groups[j]
+    d <- mydata[!is.na(mydata[[v]]) & mydata[[g]] != "" & !is.na(mydata[[g]]), ]
+    if (length(unique(d[[g]])) < 2) return(NULL)
+    kw <- kruskal.test(as.formula(paste(v, "~", g)), data = d)
+    data.frame(Variable = ks_labels[i],
+               Grouping = kw_labels[j],
+               Chi_Sq   = round(as.numeric(kw$statistic), 3),
+               DF       = as.numeric(kw$parameter),
+               P_value  = signif(kw$p.value, 4),
+               Decision = decide(kw$p.value),
+               stringsAsFactors = FALSE)
+  }))
+}))
+
+knitr::kable(kw_df, caption = "Kruskal--Wallis Test Results",
+  row.names = FALSE)
+```
+
+**Note.** Birth Weight $\times$ Age Group is degenerate: Birth Weight is
+non-missing only for newborn discharges, which all fall in the "0 to 17"
+age group, so only one level of Age Group has data and Kruskal--Wallis
+cannot be computed. All 15 remaining combinations reject $H_0$ at
+$\alpha = 0.05$.
+
+---
+
+## Test 7: Friedman Test (Facility as Block, Severity as Treatment)
+
+$$
+Q = \frac{12}{nk(k+1)} \sum_{j=1}^{k} R_j^2 - 3n(k+1)
+$$
+
+```{r friedman-test}
+# Severity (k=4 levels) is the treatment; facility is the block.
+# Only facilities that have observations at all 4 severity levels are kept.
+fried_df <- do.call(rbind, lapply(seq_len(3), function(i) {
+  v   <- ks_vars[i]
+  sub <- mydata[!is.na(mydata[[v]]) &
+                !is.na(mydata$APR.Severity.of.Illness.Code), ]
+
+  ag <- aggregate(as.formula(paste(v,
+          "~ Facility.Name + APR.Severity.of.Illness.Code")),
+          data = sub, FUN = median)
+
+  # Keep only facilities observed at all 4 severity levels
+  complete <- names(table(ag$Facility.Name)[table(ag$Facility.Name) == 4])
+  ag2      <- ag[ag$Facility.Name %in% complete, ]
+  if (length(complete) < 2) return(NULL)
+
+  # Wide format: rows = facilities (blocks), cols = severity levels (treatments)
+  w  <- reshape(ag2, idvar = "Facility.Name",
+                timevar = "APR.Severity.of.Illness.Code",
+                direction = "wide")
+  m  <- as.matrix(w[, -1])
+  fr <- friedman.test(m)
+
+  data.frame(Variable = ks_labels[i],
+             N_Blocks = nrow(m),
+             K        = ncol(m),
+             Chi_Sq   = round(as.numeric(fr$statistic), 3),
+             DF       = as.numeric(fr$parameter),
+             P_value  = signif(fr$p.value, 4),
+             Decision = decide(fr$p.value),
+             stringsAsFactors = FALSE)
+}))
+
+knitr::kable(fried_df,
+  caption   = "Friedman Test: Severity as Treatment, Facility as Block",
+  row.names = FALSE)
+```
+
+---
+
+## Rank-Correlation Setup (Tests 8 and 9)
+
+The Kendall and Spearman tests both loop over the same 6 variable pairs.
+Kendall's Tau is computed on a random 5,000-row subsample because exact
+computation on the full $N \approx 370{,}000$ records is infeasible.
+
+```{r corr-setup}
+num_vars <- c("LOS", "Charges", "Costs", "BirthWt")
+
+# All unique (i,j) variable pairs, i < j
+pair_idx <- t(combn(length(num_vars), 2))
+
+# Stratified subsample for Kendall's Tau
+set.seed(1)
+sub <- mydata[sample(nrow(mydata), 5000), ]
+```
+
+## Test 8: Kendall's Tau
+
+$$
+\tau = \frac{C - D}{\binom{n}{2}}
+$$
+
+```{r kendall-test}
+kendall_df <- do.call(rbind, apply(pair_idx, 1, function(p) {
+  v1 <- num_vars[p[1]]; v2 <- num_vars[p[2]]
+  x  <- sub[[v1]]; y <- sub[[v2]]
+  ok <- complete.cases(x, y)
+  if (sum(ok) <= 20) return(NULL)
+  kt <- cor.test(x[ok], y[ok], method = "kendall", exact = FALSE)
+  data.frame(Pair     = paste(v1, "vs", v2),
+             Tau      = round(as.numeric(kt$estimate), 4),
+             P_value  = signif(kt$p.value, 4),
+             Decision = decide(kt$p.value),
+             stringsAsFactors = FALSE)
+}))
+
+knitr::kable(kendall_df,
+  caption   = "Kendall's Tau (random subsample, n = 5000)",
+  row.names = FALSE)
+```
+
+## Test 9: Spearman's Rank Correlation
+
+$$
+\rho_s = 1 - \frac{6\sum d_i^2}{n(n^2-1)}
+$$
+
+```{r spearman-test}
+spearman_df <- do.call(rbind, apply(pair_idx, 1, function(p) {
+  v1 <- num_vars[p[1]]; v2 <- num_vars[p[2]]
+  x  <- mydata[[v1]]; y <- mydata[[v2]]
+  ok <- complete.cases(x, y)
+  sp <- cor.test(x[ok], y[ok], method = "spearman", exact = FALSE)
+  data.frame(Pair     = paste(v1, "vs", v2),
+             Rho      = round(as.numeric(sp$estimate), 4),
+             P_value  = signif(sp$p.value, 4),
+             Decision = decide(sp$p.value),
+             stringsAsFactors = FALSE)
+}))
+
+knitr::kable(spearman_df,
+  caption   = "Spearman's Rank Correlation",
+  row.names = FALSE)
+```
+
+```{r spearman-matrix}
+sp_mat <- cor(mydata[, num_vars], use = "pairwise.complete.obs", method = "spearman")
+knitr::kable(round(sp_mat, 4),
+             caption = "Spearman Correlation Matrix")
+```
+
+---
+
+## Test 10: Permutation Test (Monte Carlo)
+
+$$
+T^{\text{obs}} = \tilde{X}_K - \tilde{X}_Q, \quad
+p = \frac{1}{B+1}\Bigl(1 + \sum_{b=1}^{B} \mathbf{1}\{|T^{(b)}| \ge |T^{\text{obs}}|\}\Bigr)
+$$
+
+```{r perm-fn}
+# Distribution-free two-sample permutation test, supports mean or median.
+perm_two_sample <- function(x, y, B = 10000, stat = "mean", seed = 42) {
+  set.seed(seed)
+  obs   <- if (stat == "mean") mean(x)   - mean(y)
+           else                 median(x) - median(y)
+  pool  <- c(x, y); n1 <- length(x)
+  stats <- numeric(B)
+  for (b in seq_len(B)) {
+    ix <- sample.int(length(pool), n1)
+    a  <- pool[ix]; bb <- pool[-ix]
+    stats[b] <- if (stat == "mean") mean(a) - mean(bb) else median(a) - median(bb)
+  }
+  list(observed = obs,
+       p        = (1 + sum(abs(stats) >= abs(obs))) / (B + 1),
+       null     = stats)
+}
+```
+
+### Permutation Test on Total Charges (Kings vs Queens)
+
+```{r perm-charges}
+set.seed(7)
+K_idx <- sample(which(mydata$Hospital.County == "Kings"  & !is.na(mydata$Charges)), 3000)
+Q_idx <- sample(which(mydata$Hospital.County == "Queens" & !is.na(mydata$Charges)), 3000)
+
+p_med  <- perm_two_sample(mydata$Charges[K_idx], mydata$Charges[Q_idx],
+                          B = 5000, stat = "median")
+
+perm_df <- data.frame(
+  Statistic = c("Median Difference (Kings - Queens)"),
+  Observed  = c(round(p_med$observed, 2)),
+  P_value   = c(signif(p_med$p, 4)),
+  Decision  = c(decide(p_med$p)),
+  stringsAsFactors = FALSE)
+
+knitr::kable(perm_df,
+  caption   = "Permutation Test: Total Charges, Kings vs Queens (B = 5000)",
+  row.names = FALSE)
+```
+
+**Interpretation.** The median difference in Charges between Kings and Queens is significant ($p = 0.011$), so the null hypothesis of exchangeable county labels is rejected. The robust median detects a real distributional shift between the two counties even when extreme outliers (one charge exceeds \$12 million in Kings) are present in the sample.
+
+---
+
+# Comprehensive Summary
+
+```{r overall-summary, echo=FALSE}
+all_summary <- data.frame(
+  Result = c(
+    "Reject H0 for every testable variable",
+    "Reject H0 for all 5 variables",
+    "Reject H0 for all 5 paired comparisons",
+    "Reject H0 for all 6 comparisons",
+    "Reject H0 for all 4 variables",
+    "Reject H0 for all 4 variables",
+    "Reject H0 for all 15 testable combinations",
+    "Reject H0 for LOS, Charges, Costs",
+    "Reject H0 for all pairs",
+    "Reject H0 for all pairs (rho=0.86 Charges~Costs)",
+    "Median rejects H0 (p=0.011)"),
+  Test = c(
+    "Runs Test (9 numeric variables)",
+    "Sign Test (LOS, Charges, Costs, BirthWt, Severity: K vs Q)",
+    "Wilcoxon Signed-Rank (LOS, Charges, Costs, BirthWt, Severity: K vs Q)",
+    "Mann-Whitney U (5 vars Kings vs Queens + Charges ED vs Non-ED)",
+    "KS (Kings vs Queens, 4 vars)",
+    "KS (ED vs Non-ED, 4 vars)",
+    "Kruskal-Wallis (4 vars x 4 groupings)",
+    "Friedman (Severity, blocked by Facility)",
+    "Kendall's Tau (6 pairs)",
+    "Spearman's Rho (6 pairs)",
+    "Permutation (Charges median, K vs Q)"))
+
+knitr::kable(all_summary,
+  caption   = "Comprehensive Summary of All Nonparametric Tests",
+  row.names = FALSE)
+```
+
+# Conclusion, Comparison to Existing Work, and Future Research
+
+Ten distribution-free procedures were applied to the SPARCS 2022 hospital
+discharge data for Kings and Queens counties. Taken together, the
+evidence strongly supports the claim that:
+
+- The ordering of the raw SPARCS records is non-random (Runs Test).
+- The median Length of Stay differs between the two counties (Sign Test;
+  $p < 2.2 \times 10^{-16}$), and the paired distributions of Length
+  of Stay, Charges, and Costs also differ (Wilcoxon Signed-Rank).
+- The independent-sample distributions of Length of Stay, Charges, and
+  Costs differ between counties (Mann-Whitney U), and Charges differ
+  between Emergency Department and Non-Emergency Department admissions.
+- The distributions of Length of Stay, Charges, Costs, and Birth Weight
+  differ significantly between the two counties at every level of
+  resolution (Kolmogorov-Smirnov, Kruskal--Wallis, Permutation).
+- Illness severity remains a dominant driver of Length of
+  Stay/Charges/Costs even after controlling for facility (Friedman).
+- Length of Stay, Charges, and Costs are strongly and monotonically
+  associated (Spearman $\rho \approx 0.86$ for Charges--Costs,
+  $\rho \approx 0.73$ for Length of Stay--Charges), while Birth Weight
+  is only weakly related.
+- The Permutation Test on Total Charges confirms a significant median
+  difference between counties ($p = 0.011$), so the null hypothesis of
+  exchangeable county labels is rejected. The robust median detects a
+  real distributional shift even when extreme outliers (one charge
+  exceeds \$12 million in Kings) are present in the sample.
+
+These findings corroborate Stone et al. (2022), Chazard et al. (2017),
+and Heslin et al. (2024), who reported large geographic and
+severity-driven variability in hospital utilization using SPARCS or HCUP
+data.
+
+**Limitations.** With $N \approx 370{,}000$ records, even tiny effects
+achieve astronomical significance; a useful future extension would be to
+add non-parametric bootstrap confidence intervals for effect sizes
+(Spearman $\rho$, median Charges differences) to complement the
+$p$-value-based conclusions. Kendall's Tau and the Permutation Test were
+computed on random subsamples because exact computation on the full data
+is infeasible.
+
+**Future work.** Planned extensions include: (i) extending the analysis
+to all five New York City boroughs using SPARCS 2023; (ii) adding the
+Jonckheere--Terpstra trend test for ordered severity levels; (iii)
+fitting a semi-parametric time-to-discharge model in the spirit of Li et
+al.\ (2022); and (iv) a permutation-based regression to disentangle
+facility, payer, and demographic effects on Charges.
+
+# R Code
+
+All analyses in this report were executed in R (4.3+) using base
+functions only, with no external packages required for the nonparametric
+test statistics themselves. Key functions: custom `runs_test()`,
+`binom.test()` for the Sign Test, `wilcox.test(..., paired = TRUE)` for
+the Wilcoxon Signed-Rank Test, `wilcox.test(...)` for the Mann-Whitney U
+Test, `ks.test()`, `kruskal.test()`, `friedman.test()` with `reshape()`,
+`cor.test(..., method = "kendall")` and
+`cor.test(..., method = "spearman")`, and custom `perm_two_sample()` for
+the Permutation Test.
+
+# References
+
+The full reference list -- spanning methodological simulation studies
+on hospital Length of Stay/cost data, prior SPARCS and HCUP analyses,
+and permutation/bootstrap theory -- is provided in the accompanying
+LaTeX paper `Vinay_Final_Project.pdf`, Section 9. Key sources include:
+Swed \& Eisenhart (1943); Efron \& Tibshirani (1993); Ernst (2004);
+Fagerland \& Sandvik (2009); Qualls, Pallin, \& Schuur (2010); Croux \&
+Dehon (2010); Anhoj \& Olesen (2014); Moore et al.\ (2017); Chazard et
+al.\ (2017); Ning et al.\ (2017); Bujang \& Sapri (2018); Dieleman et
+al.\ (2020); Nguyen et al.\ (2021); Stone et al.\ (2022); Li et al.\
+(2022); and Heslin et al.\ (2024).
