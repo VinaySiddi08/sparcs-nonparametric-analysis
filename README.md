@@ -102,4 +102,4 @@ This project builds on a wide literature; full citations in the report. The most
 
 ---
 
-**Contact:** Vinay Siddi · vsiddi@albany.edu · [LinkedIn](https://linkedin.com/in/) · Albany, NY
+**Contact:** Vinay Siddi · <vsiddi@albany.edu> · [LinkedIn](https://www.linkedin.com/in/vinay-siddi-378252252) · Albany, NY
